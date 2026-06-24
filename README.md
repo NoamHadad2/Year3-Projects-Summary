@@ -18,98 +18,363 @@ This report documents two independent projects completed across two semesters. B
 
 ## Semester A — WeatherProof-KITTI
 
-### Executive Summary
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
+[![YOLO](https://img.shields.io/badge/YOLO-v8s-00FFFF.svg)](https://github.com/ultralytics/ultralytics)
+[![Colab](https://img.shields.io/badge/Run%20in-Colab-F9AB00.svg)](https://colab.research.google.com/)
 
-Object detectors trained on clear-weather driving data collapse in rain, snow, fog, and night conditions — dropping **72.3%** in mAP@50. Re-collecting real adverse-weather data is prohibitively expensive. This project builds an automated pipeline that generates realistic synthetic weather variants of the KITTI dataset using depth-guided inpainting, trains a YOLOv8s detector on the mixed data, and reduces the weather-induced performance drop to **11.9%**.
+**Enhancing Object Detection Robustness in Adverse Weather via Latent Diffusion Synthetic Data Augmentation (KITTI Dataset)**
 
-### At a Glance
+> An end-to-end deep learning pipeline that overcomes the Domain Gap in autonomous driving by generating realistic synthetic harsh-weather training data using SDXL + Dual ControlNet, achieving a **6x reduction** in performance degradation under adverse conditions.
 
-```
-Before (sunny-only training)           After (mixed training)
-────────────────────────────────────────────────────────────────
-Sunny mAP@50:    0.801                 Sunny mAP@50:    0.815  (+1.7%)
-Harsh mAP@50:    0.222                 Harsh mAP@50:    0.718  (+223%)
-Performance drop: -72.3%               Performance drop: -11.9%
-Pedestrian harsh: 0.178                Pedestrian harsh: 0.643  (+261%)
-```
+---
 
-### Problem
+### Table of Contents
 
-Autonomous vehicles must detect objects reliably across all conditions. A detector with **0.801 mAP@50** in sunshine drops to **0.222 mAP@50** the moment it starts raining — a 72.3% collapse that cannot be tolerated in a safety-critical system. The solution is not to collect more real data (expensive, dangerous, slow) but to **generate** it synthetically from what we already have.
+- [Overview](#overview-1)
+- [Pipeline Architecture](#pipeline-architecture)
+- [Synthetic Data Examples](#synthetic-data-examples)
+- [Model Architecture](#model-architecture)
+- [Key Results](#key-results)
+- [Dataset](#dataset)
+- [Installation](#installation)
+- [Repository Structure](#repository-structure)
+- [Training](#training)
+- [Quick Start](#quick-start)
+- [Limitations](#limitations)
+- [References](#references)
+
+---
+
+### Overview
+
+#### Problem Statement
+
+Autonomous vehicle perception systems are trained almost exclusively on clear, sunny driving data. When deployed in the real world, these systems must handle rain, snow, fog, and nighttime conditions — creating a **Domain Gap** that causes catastrophic detection failures:
+
+- **Domain Shift**: Weather artifacts (snow, rain streaks, fog haze) corrupt learned feature representations
+- **Low Visibility**: Reduced contrast and occluded objects in harsh conditions
+- **Safety-Critical Failure**: Missed detections of pedestrians, cyclists, and vehicles directly endanger lives
+
+#### The Data Gap
+
+> **Collecting real adverse-weather driving data at scale is impractical** — it requires dangerous driving conditions, specialized equipment, and extensive manual re-annotation.
+
+This motivates our synthetic data generation approach.
+
+#### Solution
+
+**WeatherProof-KITTI** addresses this by:
+
+1. **Generating synthetic harsh-weather frames** using SDXL inpainting with Dual ControlNet (MiDaS Depth + Canny Edges) conditioning
+2. **Preserving spatial geometry** so all original bounding-box annotations remain valid without re-labeling
+3. **Training a robust YOLOv8s detector** on the augmented 50/50 mixed dataset
+
+---
 
 ### Pipeline Architecture
 
-```mermaid
-flowchart TD
-    A[KITTI Image + YOLO Labels] --> B[Depth Anything V2\nMonocular depth estimation]
-    A --> C[Segment Anything - SAM\nForeground isolation via bbox prompts]
-    B --> D[Dual ControlNet Signals\nDepth map + Canny edges]
-    C --> E[Background mask]
-    D --> F[SDXL Inpainting\nWeather-conditioned background synthesis]
-    E --> F
-    F --> G[Color Transfer\nMatch lighting to original scene]
-    G --> H[Synthetic Image\nOriginal labels still valid]
-    H --> I{Weather condition}
-    I --> J[🌧 Rain]
-    I --> K[❄ Snow]
-    I --> L[🌫 Fog]
-    I --> M[🌙 Night]
-```
+The research consists of two main pipelines:
 
-**Why Dual ControlNet?**  
-Single-signal approaches fail: depth alone loses fine object boundaries; Canny edges alone lose spatial structure. Combining both preserves geometry *and* boundaries so the synthesized background aligns naturally with the foreground objects — and YOLO annotations remain valid without any re-labeling.
+#### Pipeline 1: Synthetic Adverse-Weather Generation
 
-### Implementation
+This pipeline transforms sunny KITTI driving frames into realistic Snow, Rain, Fog, and Night conditions while preserving all object annotations.
 
-Three notebooks implement the full pipeline end-to-end:
+![Pipeline 1: Synthetic Generation](https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/assets/pipeline1_synthetic_generation.png)
 
-**[`01_KITTI_EDA_DataPrep.ipynb`](https://github.com/NoamHadad2/SyntheticImageData/blob/main/Weather/notebooks/01_KITTI_EDA_DataPrep.ipynb)**  
-Downloads KITTI (~372 MB, 14,969 files), analyzes class distribution, bounding box statistics, and prepares the dataset split for downstream generation and training.
+| Step | Component | Description |
+|------|-----------|-------------|
+| 1 | MiDaS Depth | Monocular depth estimation for 3D scene geometry guidance |
+| 2 | Canny Edge | Edge map extraction to preserve object boundaries |
+| 3 | SDXL + Dual ControlNet | Weather-conditioned background synthesis |
+| 4 | Annotation Transfer | Original bounding boxes remain valid (geometry preserved) |
 
-**[`02_Synthetic_Data_Generation.ipynb`](https://github.com/NoamHadad2/SyntheticImageData/blob/main/Weather/notebooks/02_Synthetic_Data_Generation.ipynb)**  
-The core pipeline. For each KITTI image:
-1. Resize and pad to 1024×1024; recalculate YOLO coordinates
-2. Run Depth Anything V2 → depth map
-3. Run SAM with bounding-box prompts → foreground mask → inverted background mask
-4. Compute Canny edges
-5. Run SDXL + Dual ControlNet with weather prompt → synthetic background
-6. Apply color transfer to match lighting
-7. Composite foreground onto synthetic background; save image + original labels
+#### Pipeline 2: Model Training & Robustness Evaluation
 
-**[`03_YOLOv8s_Training_Evaluation.ipynb`](https://github.com/NoamHadad2/SyntheticImageData/blob/main/Weather/notebooks/03_YOLOv8s_Training_Evaluation.ipynb)**  
-Trains two YOLOv8s models (11.2M parameters, AdamW, AMP, seed=42 on A100):
-- **Sunny-only:** 5,236 images, 50 epochs
-- **Mixed-domain:** 10,472 images (50% sunny + 50% synthetic), 50 epochs
+This pipeline compares three YOLO models to evaluate the impact of synthetic data augmentation.
 
-Evaluates both across three test domains: sunny, harsh (synthetic), and mixed.
+![Pipeline 2: Training & Evaluation](https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/assets/pipeline2_training_evaluation.png)
 
-### Results
+| Model | Training Data | Purpose |
+|-------|---------------|---------|
+| COCO Pretrained | MS-COCO (80 classes) | Baseline reference |
+| Original | 5,236 sunny KITTI images | Clear-weather specialist |
+| Mixed | 5,236 sunny + 5,236 synthetic | Weather-robust model |
 
-**Cross-domain mAP@50:**
+#### Component Summary
 
-| Model | Sunny test | Harsh test | Drop |
-|---|---|---|---|
-| COCO pre-trained (no fine-tune) | 0.634 | 0.198 | −68.8% |
-| Sunny-only baseline | 0.801 | 0.222 | −72.3% |
-| **Mixed-domain (ours)** | **0.815** | **0.718** | **−11.9%** |
+| Component | Technology |
+|-----------|------------|
+| Depth Estimation | MiDaS (Ranftl et al.) |
+| Edge Detection | OpenCV Canny |
+| Weather Synthesis | SDXL + Dual ControlNet |
+| Object Detection | YOLOv8s (Ultralytics) |
 
-**Per-class improvement on harsh weather:**
+---
 
-| Class | Sunny-only | Mixed | Improvement |
-|---|---|---|---|
-| Car | 0.412 | 0.682 | **+66%** |
-| Pedestrian | 0.178 | 0.643 | **+261%** |
-| Cyclist | 0.201 | 0.559 | **+178%** |
+### Synthetic Data Examples
 
-**Key finding:** Training on mixed data not only closes the weather gap — it also *improves* sunny-condition performance (0.815 vs 0.801), indicating the synthetic variants act as a domain regularizer rather than a distractor.
+The generation pipeline transforms sunny KITTI frames into four adverse-weather conditions while preserving all objects and their spatial positions.
+
+<table>
+<tr><th>Original (Sunny)</th><th>Synthetic (Harsh Weather)</th></tr>
+<tr>
+<td><img src="https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/results/007321.png" width="400"/></td>
+<td><img src="https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/results/synth_007321.png" width="400"/></td>
+</tr>
+<tr>
+<td><img src="https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/results/007348.png" width="400"/></td>
+<td><img src="https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/results/synth_007348.png" width="400"/></td>
+</tr>
+<tr>
+<td><img src="https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/results/007452.png" width="400"/></td>
+<td><img src="https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/results/synth_007452.png" width="400"/></td>
+</tr>
+</table>
+
+---
+
+### Model Architecture
+
+#### Why YOLOv8s (Small)?
+
+The detection backbone is **YOLOv8s (~11.2M parameters)**, deliberately chosen over the lighter YOLOv8n (~3.2M parameters).
+
+**The Capacity Bottleneck Problem:** Initial experiments with YOLOv8n revealed that the model lacked sufficient representational capacity to simultaneously encode features for both clear and adverse-weather domains. Adding synthetic data to a YOLOv8n training set *degraded* sunny-condition performance — the model's limited parameter budget forced a destructive trade-off between domains.
+
+YOLOv8s provides enough capacity to learn **domain-invariant features**, absorbing both sunny and harsh-weather distributions without sacrificing baseline accuracy. In fact, the regularizing effect of the synthetic data caused the Mixed Model to **outperform** the Original Model even on sunny test data.
+
+---
+
+### Key Results
+
+#### Model Performance (mAP@50)
+
+| Model | Training Data | Sunny Test | Mixed Test | Harsh Test |
+|-------|---------------|------------|------------|------------|
+| COCO Pretrained | MS-COCO | 0.044 | 0.038 | 0.037 |
+| Original | 5,236 sunny | 0.801 | 0.508 | 0.222 |
+| **Mixed** | **5,236 sunny + 5,236 synth** | **0.815** | **0.767** | **0.718** |
+
+#### The Crash Test
+
+The Original Model (trained on sunny data only) suffers **catastrophic failure** in harsh weather:
+
+| Model | Sunny → Harsh Drop | Harsh mAP@50 |
+|-------|---------------------|--------------|
+| Original | **-72.3%** | 0.222 |
+| **Mixed** | **-11.9%** | **0.718** |
+
+#### Key Findings
+
+1. **Catastrophic Failure**: The Original Model's mAP@50 plummets from 0.801 to 0.222 (-72.3%) in harsh weather — a near-complete detection collapse
+2. **Robustness Gain**: The Mixed Model retains mAP@50 = 0.718 in harsh conditions, experiencing only an 11.9% drop — a **6x improvement** in robustness
+3. **Breaking the Trade-off**: The Mixed Model **outperforms** the Original even in sunny conditions (0.815 vs. 0.801) thanks to the regularizing effect of synthetic data and the increased capacity of YOLOv8s
+
+![mAP@50 Robustness Matrix](https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/results/figures/a_map50_robustness_matrix.png)
+
+#### Robustness Analysis
+
+| Model | Sunny Test | Harsh Test | Drop |
+|-------|------------|------------|------|
+| Original | 0.801 | 0.222 | **-72.3%** |
+| **Mixed** | 0.815 | 0.718 | **-11.9%** |
+
+The Mixed model trained with synthetic data shows **6x better robustness** compared to the Original model.
+
+![mAP@50-95 Robustness Matrix](https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/results/figures/b_map5095_robustness_matrix.png)
+
+![Performance Degradation](https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/results/figures/c_performance_degradation.png)
+
+#### Per-Class Performance on Harsh Weather
+
+| Class | COCO Baseline | Original | Mixed |
+|-------|---------------|----------|-------|
+| Car | 0.012 | 0.555 | **0.919** |
+| Pedestrian | 0.000 | 0.242 | **0.873** |
+| Cyclist | 0.003 | 0.334 | **0.929** |
+| Van | 0.007 | 0.344 | **0.696** |
+| Truck | 0.000 | 0.017 | **0.086** |
+| Tram | 0.000 | 0.207 | **0.664** |
+| Misc | 0.226 | 0.059 | **0.840** |
+| Person_sitting | 0.044 | 0.017 | **0.737** |
+
+The Mixed Model dramatically improves detection of **safety-critical classes** (Car, Pedestrian, Cyclist) by +66%, +261%, and +178% respectively over the Original Model in harsh weather.
+
+![Per-Class AP@50 on Harsh Weather](https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/results/figures/d_per_class_ap50_harsh.png)
+
+---
 
 ### Dataset
 
-| Split | Count | Source |
-|---|---|---|
-| Original KITTI (sunny) | 5,236 | KITTI Vision Benchmark Suite |
-| Synthetic harsh-weather | 5,236 | Generated — this project |
-| **Total mixed training set** | **10,472** | |
+#### Source
+
+This research uses the **KITTI Vision Benchmark Suite** (Geiger et al., 2012) — the standard benchmark for autonomous driving perception.
+
+#### Dataset Statistics
+
+| Split | Sunny (Original) | Synthetic (Harsh) | Total |
+|-------|-------------------|--------------------|-------|
+| **Train** | 5,236 | 5,236 | 10,472 |
+| **Test** | 748 | 748 | 1,496 |
+
+#### Object Classes
+
+| ID | Class | Safety-Critical |
+|----|-------|-----------------|
+| 0 | Car | Yes |
+| 1 | Pedestrian | Yes |
+| 2 | Cyclist | Yes |
+| 3 | Van | |
+| 4 | Truck | |
+| 5 | Tram | |
+| 6 | Misc | |
+| 7 | Person_sitting | |
+
+#### Synthetic Weather Conditions
+
+| Condition | Description |
+|-----------|-------------|
+| Rain | Heavy rain with wet road reflections |
+| Snow | Snowfall with road snow accumulation |
+| Fog | Dense fog with reduced visibility |
+| Night | Nighttime with artificial lighting |
+
+---
+
+### Installation
+
+#### Google Colab (Recommended)
+
+```python
+!pip install -q ultralytics diffusers transformers accelerate
+!pip install -q controlnet_aux
+
+from google.colab import drive
+drive.mount('/content/drive')
+```
+
+#### Local Setup
+
+```bash
+# Clone repository
+git clone https://github.com/NoamHadad2/SyntheticImageData.git
+cd SyntheticImageData/Weather
+
+# Create environment
+conda create -n weatherproof python=3.10 -y
+conda activate weatherproof
+
+# Install dependencies
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+pip install ultralytics diffusers transformers accelerate controlnet_aux
+pip install numpy pandas matplotlib seaborn tqdm
+```
+
+#### Requirements
+
+- Python 3.10+
+- CUDA 11.8+ (GPU required)
+- 16GB+ GPU VRAM recommended (for SDXL generation)
+
+---
+
+### Repository Structure
+
+```
+WeatherProof-KITTI/
+├── Weather/
+│   ├── notebooks/
+│   │   ├── 01_KITTI_EDA_DataPrep.ipynb        # Data exploration & YOLO conversion
+│   │   ├── 02_Synthetic_Data_Generation.ipynb  # SDXL + ControlNet generation (~6-10 hrs)
+│   │   └── 03_YOLOv8s_Training_Evaluation.ipynb # Training & robustness evaluation
+│   ├── results/
+│   │   ├── figures/                            # Research graphs (4 plots)
+│   │   ├── 007321.png ... 007452.png           # Original sample frames
+│   │   └── synth_007321.png ... synth_007452.png # Synthetic sample frames
+│   └── README.md
+├── original_sunny/                             # Original model training outputs
+│   ├── weights/best.pt                         # Best checkpoint (~22 MB)
+│   ├── results.csv                             # Training metrics
+│   ├── confusion_matrix.png                    # Confusion matrices
+│   └── BoxPR_curve.png                         # PR curves
+├── mixed_weather/                              # Mixed model training outputs
+│   ├── weights/best.pt
+│   ├── results.csv
+│   ├── confusion_matrix.png
+│   └── BoxPR_curve.png
+├── yaml_configs/                               # YOLO dataset configurations
+│   ├── sunny_train.yaml
+│   ├── mixed_train.yaml
+│   ├── sunny_test.yaml
+│   ├── synth_test.yaml
+│   └── mixed_test.yaml
+└── evaluation_results.json                     # Full metrics (all 9 evaluations)
+```
+
+---
+
+### Training
+
+#### Models
+
+| Model | Training Data | Epochs | Img Size |
+|-------|---------------|--------|----------|
+| COCO Pretrained | MS-COCO (80 classes) | — | — |
+| Original | 5,236 sunny KITTI | 50 | 640 |
+| Mixed | 5,236 sunny + 5,236 synth | 50 | 640 |
+
+#### Configuration
+
+```python
+MODEL      = 'yolov8s.pt'
+IMG_SIZE   = 640
+BATCH_SIZE = 16
+EPOCHS     = 50
+PATIENCE   = 10
+SEED       = 42
+```
+
+---
+
+### Quick Start
+
+#### Run in Google Colab (Recommended)
+
+```python
+# 1. Install dependencies
+!pip install -q ultralytics diffusers transformers accelerate controlnet_aux
+
+# 2. Mount Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# 3. Run notebooks in order:
+#    01_KITTI_EDA_DataPrep.ipynb          → Download KITTI, EDA, YOLO conversion (~20 min)
+#    02_Synthetic_Data_Generation.ipynb   → Generate harsh-weather images (~6-10 hours)
+#    03_YOLOv8s_Training_Evaluation.ipynb → Train & evaluate models (~3-5 hours)
+```
+
+---
+
+### Limitations
+
+- **Noisy Labels / Disappearing Objects**: The generation process occasionally obscures small, distant objects (e.g., far-away pedestrians) due to depth map limitations at extreme ranges. The diffusion model may paint over low-contrast objects in heavy fog or snow. Notably, this **realistically mimics poor visibility** where such objects would indeed be undetectable — and the Mixed Model's strong performance despite these noisy labels demonstrates resilience to imperfect training data.
+- Synthetic weather lacks physical simulation (no ray-traced water droplets or volumetric fog)
+- Optimized for the KITTI urban driving domain; generalization to other driving datasets requires validation
+- Truck and Misc classes have limited representation in the test set, affecting per-class metrics
+
+---
+
+### References
+
+| Reference | Citation |
+|-----------|----------|
+| **KITTI** | Geiger, A., Lenz, P., & Urtasun, R. (2012). *Are we ready for Autonomous Driving? The KITTI Vision Benchmark Suite.* CVPR. |
+| **SDXL** | Podell, D., et al. (2023). *SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis.* arXiv:2307.01952. |
+| **ControlNet** | Zhang, L., Rao, A., & Agrawala, M. (2023). *Adding Conditional Control to Text-to-Image Diffusion Models.* ICCV. |
+| **YOLOv8** | Jocher, G., Chaurasia, A., & Qiu, J. (2023). *Ultralytics YOLOv8.* GitHub. |
+| **MiDaS** | Ranftl, R., Bochkovskiy, A., & Koltun, V. (2021). *Vision Transformers for Dense Prediction.* ICCV. |
 
 ---
 
