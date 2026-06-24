@@ -115,15 +115,14 @@ Evaluates both across three test domains: sunny, harsh (synthetic), and mixed.
 
 ## Semester B — StableSteering: Human-Preference Feedback Features
 
-**Base platform:** [StableSteering](https://github.com/NoamHadad2/StableSteering) — supervisor's iterative preference-guided image generation research prototype  
-**Tomer Atia's semester B additions (baseline for this work):** Convergence Detection, Critique-Assisted Feedback Mode
+**Base platform:** [StableSteering](https://github.com/NoamHadad2/StableSteering) — supervisor's iterative preference-guided image generation research prototype
 
 All features below are **strictly additive** — no existing algorithm, updater, sampler, or feedback mode was modified.
 
 ### At a Glance
 
 ```
-Before (Tomer's semester B)            After (our additions)
+Before                                 After (our additions)
 ────────────────────────────────────────────────────────────────────
 Cold-start: z = [0, 0, …, 0]          Calibrated start from 5 user-chosen images
 No per-dimension feedback              Per-dimension star ratings on every candidate
@@ -287,8 +286,7 @@ flowchart LR
 
 #### Motivation
 
-Tomer's Convergence Detection answers: *"Has the image settled?"*  
-This feature answers the complementary question: *"What has the model learned about this user?"*
+The steering loop already detects when the image vector has settled — but it tells the user nothing about *what* the model has learned about their taste along the way.
 
 After several rounds of dimension feedback, the system accumulates evidence about which dimensions the user consistently values, which are noisy, and whether preferences are strengthening or weakening over time. Without surfacing this, the steering loop is a black box.
 
