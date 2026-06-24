@@ -380,23 +380,39 @@ drive.mount('/content/drive')
 
 ## Semester B — StableSteering: Human-Preference Feedback Features
 
-**Base platform:** [StableSteering](https://github.com/NoamHadad2/StableSteering) — supervisor's iterative preference-guided image generation research prototype.
+**Base platform:** [ApartsinProjects/StableSteering](https://github.com/ApartsinProjects/StableSteering) — the supervisor's iterative preference-guided image generation research prototype, forked at [NoamHadad2/StableSteering](https://github.com/NoamHadad2/StableSteering).
 
-The supervisor's platform implements the core preference-steering loop: the user enters a prompt → candidates are generated via Stable Diffusion → the user submits feedback → a steering vector `z` is updated → the next round starts from the updated `z`. It supports 5 feedback modes (`scalar_rating`, `pairwise`, `winner_only`, `approve_reject`, `top_k`), 11 preference updaters, and an async job system for generation.
+### Supervisor's Base Platform — What Existed
+
+The supervisor's platform implements the core steering loop:
+
+> User enters prompt → Stable Diffusion generates candidates → user submits feedback → steering vector `z` is updated → next round starts from the updated `z`
+
+It ships with:
+- **5 feedback modes:** `scalar_rating`, `pairwise`, `winner_only`, `approve_reject`, `top_k`
+- **10 preference updaters** (winner_copy, Bradley-Terry, softmax, etc.)
+- **Async job system** for non-blocking generation
+- **SQLite persistence** (sessions, rounds, candidates)
+- **Dashboard** showing sessions with "Resume" and "Replay" buttons — no delete
+
+What it does **not** have:
+- Any warm-up or calibration before the first round — every session cold-starts at `z = [0,…,0]`
+- Per-dimension feedback — the only rating is a single overall star per candidate
+- Priority weighting between dimensions
+- Any panel showing what the model has learned about the user's taste
+- A way to delete sessions
 
 All features below are **strictly additive** — no existing algorithm, updater, sampler, or feedback mode was modified.
 
 ### At a Glance
 
-```
-Supervisor's base platform             Our additions
-────────────────────────────────────────────────────────────────────
-Cold-start: z = [0, 0, …, 0]          Calibrated start from 5 user-chosen images
-Only overall scalar rating             Per-dimension star ratings on every candidate
-No priority signal between dimensions  Drag-to-rank dimensions → weighted overall score
-No visibility into learned preferences Live Taste Profile with signal strength + trends
-No way to delete sessions              One-click delete from dashboard
-```
+| | Supervisor's base | Our additions |
+|---|---|---|
+| Session start | Cold-start `z = [0, 0, …, 0]` | Calibrated from 5 user-chosen images |
+| Per-candidate feedback | Single overall star rating | Overall star + per-dimension star ratings |
+| Dimension weighting | Not supported | Drag-to-rank → live weighted score |
+| Preference transparency | Black box | Live Taste Profile: signal strength + trends |
+| Session management | Resume / Replay only | + One-click delete |
 
 ### System Architecture
 
@@ -428,7 +444,7 @@ flowchart LR
 
 #### Motivation
 
-In the supervisor's platform, every session starts from `z = [0, 0, …, 0]` — a cold start with no knowledge of the user's style preferences. There is no warm-up mechanism: the first 1–2 rounds are wasted exploring directions the user would immediately reject.
+The supervisor's platform starts every session at `z = [0, 0, …, 0]` with no warm-up mechanism. Round 1 always generates candidates scattered across the full embedding space — many of them in directions the user would immediately reject. There is no way to tell the system anything about preferred style before the loop begins.
 
 #### How It Works
 
@@ -478,7 +494,7 @@ sequenceDiagram
 
 #### Motivation
 
-The supervisor's platform collects only an overall `scalar_rating` per candidate — capturing *how much* the user prefers an image, but not *which aspects* they liked. Two images can both receive 3 stars for entirely different reasons: one because the lighting is great but the composition is poor, another the reverse. The updater receives a single number and cannot distinguish these cases.
+In the supervisor's platform, `scalar_rating` mode gives each candidate a single overall star rating (1–5). This captures *how much* the user prefers an image but tells the updater nothing about *which aspects* drove the score. Two images can both receive 3 stars for completely different reasons — one because the lighting is perfect but the composition is wrong, another the reverse. The updater sees an identical number in both cases and moves `z` in the same direction regardless.
 
 #### How It Works
 
@@ -515,7 +531,7 @@ Each candidate card shows a per-dimension star row beneath the overall rating. R
 
 #### Motivation
 
-The supervisor's platform treats all aspects of a prompt as equally important. Even after adding per-dimension ratings (Feature 2), the system would weight `lighting` and `composition` identically — but a landscape photographer cares far more about `mood` and `lighting` than `detail`, while a product photographer has the opposite priority. Without a way to express relative importance, the overall score calculation contradicts what the user actually values.
+The supervisor's platform has no concept of dimension priority — all aspects of a prompt are treated as equally important. Even with per-dimension ratings (Feature 2), averaging them equally can produce an overall score that contradicts the user's real preferences. A user who cares deeply about `lighting` but is indifferent to `color` should not have those two dimensions count the same toward the final ranking.
 
 #### How It Works
 
@@ -553,7 +569,7 @@ flowchart LR
 
 #### Motivation
 
-The supervisor's platform is a black box from the user's perspective: feedback goes in, new images come out, but there is no signal about what the system has learned about the user's taste. After several rounds of dimension feedback the system accumulates rich evidence — which dimensions the user consistently values, which are noisy, whether preferences are strengthening or weakening — but none of this is ever surfaced.
+The supervisor's platform gives the user no visibility into what has been learned. After several rounds, the steering vector `z` has moved based on all the feedback — but the session page shows only a round counter and a list of images. There is no panel that says "the model has noticed you consistently rate `lighting` high and `color` inconsistently." The loop is completely opaque.
 
 #### How It Works
 
@@ -603,7 +619,7 @@ The panel appears automatically after the first round with dimension feedback an
 
 #### Motivation
 
-The supervisor's platform dashboard lists all sessions with no way to remove them. In a research context sessions accumulate quickly — abandoned experiments, calibration tests, and failed runs all pile up with no cleanup mechanism.
+The supervisor's dashboard shows all sessions with two actions per row: "Resume session" and "Replay". There is no delete. The repository's `SQLiteRepository` has no `delete_session` method. In a research context, abandoned experiments, misconfigured sessions, and test runs accumulate with no way to clean them up.
 
 #### How It Works
 
