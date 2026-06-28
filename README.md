@@ -81,7 +81,23 @@ The research consists of two main pipelines:
 
 This pipeline transforms sunny KITTI driving frames into realistic Snow, Rain, Fog, and Night conditions while preserving all object annotations.
 
-![Pipeline 1: Synthetic Generation](https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/assets/pipeline1_synthetic_generation.png)
+```mermaid
+flowchart TD
+    A[KITTI Image + YOLO Labels] --> B[MiDaS Depth Estimation\nMonocular depth map]
+    A --> C[SAM — Segment Anything\nForeground mask via bbox prompts]
+    A --> D[OpenCV Canny\nEdge map]
+    B --> E[Dual ControlNet Signals\nDepth + Edges]
+    D --> E
+    C --> F[Background mask\ninverted foreground]
+    E --> G[SDXL Inpainting\nWeather-conditioned synthesis]
+    F --> G
+    G --> H[Color Transfer\nMatch lighting to original]
+    H --> I[Synthetic Image\nOriginal YOLO labels still valid]
+    I --> J[🌧 Rain]
+    I --> K[❄ Snow]
+    I --> L[🌫 Fog]
+    I --> M[🌙 Night]
+```
 
 | Step | Component | Description |
 |------|-----------|-------------|
@@ -94,7 +110,29 @@ This pipeline transforms sunny KITTI driving frames into realistic Snow, Rain, F
 
 This pipeline compares three YOLO models to evaluate the impact of synthetic data augmentation.
 
-![Pipeline 2: Training & Evaluation](https://raw.githubusercontent.com/NoamHadad2/SyntheticImageData/main/Weather/assets/pipeline2_training_evaluation.png)
+```mermaid
+flowchart LR
+    subgraph Data
+        A[5,236 Sunny KITTI images]
+        B[5,236 Synthetic harsh-weather images]
+    end
+    subgraph Models
+        C[COCO Pretrained\nMS-COCO baseline]
+        D[Original Model\nSunny-only training\n50 epochs]
+        E[Mixed Model\n50% sunny + 50% synthetic\n50 epochs]
+    end
+    subgraph Evaluation
+        F[Sunny test set\n748 images]
+        G[Mixed test set\n748 images]
+        H[Harsh test set\n748 images]
+    end
+    A --> D
+    A --> E
+    B --> E
+    D --> F & G & H
+    E --> F & G & H
+    C --> F & G & H
+```
 
 | Model | Training Data | Purpose |
 |-------|---------------|---------|
